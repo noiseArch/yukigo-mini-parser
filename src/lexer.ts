@@ -1,7 +1,9 @@
 import moo from "moo";
 import { makeLexer } from "moo-ignore";
 
-const keywords = []
+const keywords = [
+  "return"
+]
 
 export const MiniLexerConfig = {
   EOF: "*__EOF__*",
@@ -17,6 +19,12 @@ export const MiniLexerConfig = {
   },
   semicolon: ";",
   assign: ":=",
+  lparen: "(",
+  rparen: ")",
+  lbracket: "{",
+  rbracket: "}",
+  comma: ",",
+  operator: /\+/,
   variable: {
     match: /[a-z_][a-zA-Z0-9_']*/,
     type: moo.keywords({

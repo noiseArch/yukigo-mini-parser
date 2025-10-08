@@ -1,4 +1,4 @@
-# How to make a Yukigo parser
+# Quickstart: How to make a Yukigo parser
 
 In this tutorial we will cover some basics on making a parser compatible with the yukigo analyzer.
 
@@ -122,16 +122,16 @@ program -> %WS {% (d) => d %}
 ```
 
 Let's start small by supporting variable assignment, we want to be able to assign and declare variables like this
-```mini
+```
 int x = 10;
 ```
 So we need to add multiple things first. As we see, the assignment statement is composed of a `type` a `variable` and an optional `expression` (we want to support `int x;` also)
 
 Let's modify our `program` rule and add a `statement` rule that we can later expand
 ```ne
-program -> (statement):+ _ %EOF
+program -> statement:+ _ %EOF
 
-statement -> assignment _ ";"
+statement -> assignment _ ";" _
 
 assignment -> type __ variable (_ "=" _ expression):?
 ```
@@ -237,9 +237,10 @@ import {
 @preprocessor typescript
 @lexer MiniLexer
 
-program -> (_ statement):+ _ %EOF {% (d) => d[0].map(x => x[1]) %}
+program -> statement:+ _ %EOF {% (d) => d[0].flat(Infinity) %}
 
-statement -> assignment _ ";" {% (d) => d[0] %}
+
+statement -> assignment _ ";" _ {% (d) => d[0] %}
 
 assignment -> type __ variable (_ "=" _ expression):? {% (d) => new Variable(d[2], d[3] ? d[3][3] : new NilPrimitive(null), d[0]) %}
 
@@ -311,3 +312,120 @@ describe("Parser Tests", () => {
   });
 });
 ```
+
+```
+  Parser Tests
+    ✔ should parse assignment
+```
+
+Excellent! We have our first feature implemented with the test running
+
+Now let's build some more advaced features
+
+## Functions
+
+We want to add support for functions like this
+```
+int add(int x, int y) {
+  int result = x + y;
+  return result;
+};
+int three = add(1, 2);
+```
+We see that the function `add` is a `Procedure` with one `Equation` that has two `VariablePattern` and an `UnguardedBody` with a `Sequence` of two statements: `Variable` and `Return`.
+
+So let's start with the rule for the function statement.
+
+```
+# ...
+function_statement -> type __ variable ("(" _ param_list:? _ ")" _ "{" _ body _ "}") {% (d) => {
+    const paramTypeList = []
+    const patternList = []
+    if(d[3][2]) {
+        for(const [paramType, paramPattern] of d[3][2]) {
+            paramTypeList.push(paramType);
+            patternList.push(paramPattern);
+        }
+    }
+    const signatureType = new ParameterizedType(paramTypeList, d[0], []) 
+
+    const signature = new TypeSignature(d[2], signatureType);
+    const procedure =  new Procedure(d[2], [new Equation(patternList, d[3][8])])
+    return [signature, procedure]
+}%}
+
+param_list -> param (_ "," _ param):* {% d => [d[0], ...d[1].map(x => x[3])] %}
+
+param -> type __ variable {% d => [d[0], new VariablePattern(d[2])] %}
+
+body -> statement:* {% (d) => new UnguardedBody(new Sequence(d[0])) %}
+# ...
+```
+
+> Notice that, we also add a `TypeSignature` node which represents the signature of a function. In `paramTypeList` we collect the types of each argument to later add it to the `inputs` of the `ParameterizedType`. 
+
+Also let's add a return statement
+
+```
+return_statement -> "return" _ expression {% (d) => new Return(d[2]) %}
+```
+
+And finally let's add them to our statement rule
+```
+statement -> (assignment | function_statement | return_statement) _ ";" _ {% (d) => d[0][0] %}
+```
+
+Finally let's add a test that validates this behaviour
+
+```ts
+it("should parse function declaration", () => {
+  const code = `int add(int x, int y) {
+  int result := x + y;
+  return result;
+};`;
+  assert.deepEqual(parser.parse(code), [
+    new TypeSignature(
+      new SymbolPrimitive("add"),
+      new ParameterizedType(
+        [new SimpleType("int", []), new SimpleType("int", [])],
+        new SimpleType("int", []),
+        []
+      )
+    ),
+    new Procedure(new SymbolPrimitive("add"), [
+      new Equation(
+        [
+          new VariablePattern(new SymbolPrimitive("x")),
+          new VariablePattern(new SymbolPrimitive("y")),
+        ],
+        new UnguardedBody(
+          new Sequence([
+            new Variable(
+              new SymbolPrimitive("result"),
+              new ArithmeticBinaryOperation(
+                "Plus",
+                new SymbolPrimitive("x"),
+                new SymbolPrimitive("y")
+              ),
+              new SimpleType("int", [])
+            ),
+            new Return(new SymbolPrimitive("result")),
+          ])
+        )
+      ),
+    ]),
+  ]);
+});
+```
+
+Hopefully that will give us
+```
+Parser Tests
+  ✔ should parse assignment
+  ✔ should parse function declaration
+```
+It's a pretty simple workflow, if you like you could even do TDD and make the tests first.
+
+## Collection Primitive
+
+## Control Flow: If & While statements
