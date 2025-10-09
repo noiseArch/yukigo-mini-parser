@@ -1,8 +1,14 @@
 import { assert } from "chai";
 import {
   ArithmeticBinaryOperation,
+  Assignment,
+  ComparisonOperation,
   Equation,
+  If,
+  ListPrimitive,
+  ListType,
   NilPrimitive,
+  NumberPrimitive,
   ParameterizedType,
   Procedure,
   Return,
@@ -13,9 +19,10 @@ import {
   UnguardedBody,
   Variable,
   VariablePattern,
+  While,
   YukigoParser,
 } from "yukigo-core";
-import { YukigoMiniParser } from "../dist/index.js";
+import { YukigoMiniParser } from "../src/index.js";
 
 describe("Parser Tests", () => {
   let parser: YukigoParser;
@@ -74,6 +81,78 @@ describe("Parser Tests", () => {
           )
         ),
       ]),
+    ]);
+  });
+  it("should parse list primitive", () => {
+    const code = `int[] numberList := [1, 2, 3 + 4];`;
+    assert.deepEqual(parser.parse(code), [
+      new Variable(
+        new SymbolPrimitive("numberList"),
+        new ListPrimitive([
+          new NumberPrimitive(1),
+          new NumberPrimitive(2),
+          new ArithmeticBinaryOperation(
+            "Plus",
+            new NumberPrimitive(3),
+            new NumberPrimitive(4)
+          ),
+        ]),
+        new ListType(new SimpleType("int", []), [])
+      ),
+    ]);
+  });
+  it("should parse if statement", () => {
+    const code = `if(a != b) { c := a + b; } else { c := a * 2; };`;
+    assert.deepEqual(parser.parse(code), [
+      new If(
+        new ComparisonOperation(
+          "NotEqual",
+          new SymbolPrimitive("a"),
+          new SymbolPrimitive("b")
+        ),
+        new Sequence([
+          new Assignment(
+            new SymbolPrimitive("c"),
+            new ArithmeticBinaryOperation(
+              "Plus",
+              new SymbolPrimitive("a"),
+              new SymbolPrimitive("b")
+            )
+          ),
+        ]),
+        new Sequence([
+          new Assignment(
+            new SymbolPrimitive("c"),
+            new ArithmeticBinaryOperation(
+              "Multiply",
+              new SymbolPrimitive("a"),
+              new NumberPrimitive(2)
+            )
+          ),
+        ]),
+      ),
+    ]);
+  });
+  it("should parse while loop statement", () => {
+    const code = `while(a < 10) { a := a + 1; };`;
+    assert.deepEqual(parser.parse(code), [
+      new While(
+        new ComparisonOperation(
+          "LessThan",
+          new SymbolPrimitive("a"),
+          new NumberPrimitive(10)
+        ),
+        new Sequence([
+          new Assignment(
+            new SymbolPrimitive("a"),
+            new ArithmeticBinaryOperation(
+              "Plus",
+              new SymbolPrimitive("a"),
+              new NumberPrimitive(1)
+            )
+          ),
+        ]),
+      ),
     ]);
   });
 });

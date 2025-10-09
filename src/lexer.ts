@@ -2,7 +2,9 @@ import moo from "moo";
 import { makeLexer } from "moo-ignore";
 
 const keywords = [
-  "return"
+  "return",
+  "if",
+  "else"
 ]
 
 export const MiniLexerConfig = {
@@ -19,12 +21,20 @@ export const MiniLexerConfig = {
   },
   semicolon: ";",
   assign: ":=",
+  notEqual: "!=",
+  equal: "==",
+  gte: ">=",
+  gt: ">",
+  lte: "<=",
+  lt: "<",
   lparen: "(",
   rparen: ")",
+  lsquare: "[",
+  rsquare: "]",
   lbracket: "{",
   rbracket: "}",
   comma: ",",
-  operator: /\+/,
+  operator: /\+|\*/,
   variable: {
     match: /[a-z_][a-zA-Z0-9_']*/,
     type: moo.keywords({

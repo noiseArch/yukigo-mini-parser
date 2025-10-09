@@ -2,6 +2,14 @@
 
 In this tutorial we will cover some basics on making a parser compatible with the yukigo analyzer.
 
+By the end of this tutorial, you will be able to:
+- Set up a nearley-based parser with TypeScript
+- Design a lexer using `moo`
+- Write grammar rules with proper operator precedence and associativity
+- Use postprocessors to build a Yukigo-compatible AST
+- Implement support for variables, functions, lists, conditionals, and loops
+- Write and run unit tests for your parser
+
 First, let's check what yukigo expects from a parser.
 
 ```ts
@@ -52,8 +60,47 @@ For the `tsconfig.json` file this will be the configuration:
 }
 ```
 
+And in `package.json` we will have this
+```json
+{
+  "name": "yukigo-mini-parser",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "build": "nearleyc src/grammar.ne -o src/grammar.ts && tsc",
+    "test": "npm run build && mocha"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/chai": "^5.2.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.7.0",
+    "chai": "^6.2.0",
+    "mocha": "^11.7.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@types/moo": "^0.5.10",
+    "moo": "^0.5.2",
+    "moo-ignore": "^2.5.3",
+    "nearley": "^2.20.1",
+    "yukigo-core": "file:../yukigo-core"
+  }
+}
+```
+
 So let's start our parser as a class that implements `YukigoParser`.
-In our `index.ts`
+In our `src/index.ts`
 
 ```ts
 import { YukigoParser } from "yukigo-core";
@@ -108,7 +155,7 @@ As you can see, we have defined primitive tokens like `number`, `string`, `char`
 > We need to define every token that our lexer should expect. That's why we defined `assign` and `semicolon`
 
 Now let's start with the grammar file.
-Make a `grammar.ne` file in the `dist/` directory.
+Make a `src/grammar.ne` file and add this boilerplate for now
 
 ```nearley
 @{%
@@ -119,11 +166,19 @@ import { MiniLexer } from "./lexer.js"
 @lexer MiniLexer
 
 program -> %WS {% (d) => d %}
+
+_ -> %WS:* {% d => null %}
+__ -> %WS:+ {% d => null %}
 ```
+
+> `_` and `__` are rules to match zero-or-more and one-or-more whitespaces. 
+
+> nearley.js allows us to use [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) operators `:+`, `:*`, `:?`
+
 
 Let's start small by supporting variable assignment, we want to be able to assign and declare variables like this
 ```
-int x = 10;
+int x := 10;
 ```
 So we need to add multiple things first. As we see, the assignment statement is composed of a `type` a `variable` and an optional `expression` (we want to support `int x;` also)
 
@@ -133,11 +188,8 @@ program -> statement:+ _ %EOF
 
 statement -> assignment _ ";" _
 
-assignment -> type __ variable (_ "=" _ expression):?
+assignment -> type __ variable (_ ":=" _ expression):?
 ```
-> Don't worry about `_` and `__` for now.
-
-> nearley.js allows us to use [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) operators `:+`, `:*`, `:?`
 
 Let's continue with the expressions. An expression is a syntactic notation that can be evaluated to get its value. So we will need to add some more rules to support arithmetic binary operations and primitive values.
 
@@ -154,6 +206,7 @@ addition ->
 multiplication -> 
     multiplication _ "*" _ primary
     | multiplication _ "/" _ primary
+    | primary
 
 primary -> 
     variable
@@ -184,12 +237,7 @@ Good! Finally for this first statement we will implement a simple type rule that
 type -> variable
 
 variable -> %variable
-
-_ -> %WS:* {% d => null %}
-__ -> %WS:+ {% d => null %}
 ```
-
-> The mistery of the `_` and `__` non-terminals is solved! These represent "zero or more" whitespaces and "one-or-more" whitespaces respectively.
 
 Now let's add the post processing of these rules. We want our parser to produce certain output after matching a rule. For that we can use a syntax that nearley provides. Let's use the `variable` rule for example
 
@@ -239,10 +287,9 @@ import {
 
 program -> statement:+ _ %EOF {% (d) => d[0].flat(Infinity) %}
 
-
 statement -> assignment _ ";" _ {% (d) => d[0] %}
 
-assignment -> type __ variable (_ "=" _ expression):? {% (d) => new Variable(d[2], d[3] ? d[3][3] : new NilPrimitive(null), d[0]) %}
+assignment -> type __ variable (_ ":=" _ expression):? {% (d) => new Variable(d[2], d[3] ? d[3][3] : new NilPrimitive(null), d[0]) %}
 
 expression -> addition {% (d) => d[0] %}
 
@@ -276,6 +323,38 @@ _ -> %WS:* {% d => null %}
 __ -> %WS:+ {% d => null %}
 ```
 
+> As you may have notice, in the `program` rule we use `.flat(Infinity)` this is because some rules (like `function_statement`) return multiple top-level declarations. We flatten the result to produce a flat list of statements. 
+
+Excellent! We need to load the compiled grammar into our `YukigoParser` class, where we will also add some error handling 
+```ts
+import { YukigoParser } from "yukigo-core";
+import nearley from "nearley";
+import grammar from "./grammar.js";
+
+export class YukigoMiniParser implements YukigoParser {
+  public errors: string[] = [];
+
+  public parse(code: string) {
+    const parser = new nearley.Parser(nearley.Grammar.fromCompiled(grammar));
+    try {
+      parser.feed(code);
+      parser.finish();
+    } catch (error) {
+      const token = error.token;
+      const message = `Unexpected '${token.type}' token '${token.value}' at line ${token.line} col ${token.col}.`;
+      this.errors.push(message)
+    }
+    const results = parser.results
+    if(results.length > 1)
+      throw Error(`Ambiguous grammar. The parser generated ${results} ASTs`)
+
+    return results[0]
+  }
+}
+```
+
+> We need to ensure our grammar only produces one AST, nearley returns all possible ASTs so we need to throw in case that the parser returns more than one.
+
 Let's use `mocha` and `chai` to write a test in `tests/parser.spec.ts`
 
 ```ts
@@ -287,7 +366,7 @@ import {
   Variable,
   YukigoParser,
 } from "yukigo-core";
-import { YukigoMiniParser } from "../dist/index.js";
+import { YukigoMiniParser } from "../src/index.js";
 
 describe("Parser Tests", () => {
   let parser: YukigoParser;
@@ -327,10 +406,10 @@ Now let's build some more advaced features
 We want to add support for functions like this
 ```
 int add(int x, int y) {
-  int result = x + y;
+  int result := x + y;
   return result;
 };
-int three = add(1, 2);
+int three := add(1, 2);
 ```
 We see that the function `add` is a `Procedure` with one `Equation` that has two `VariablePattern` and an `UnguardedBody` with a `Sequence` of two statements: `Variable` and `Return`.
 
@@ -424,8 +503,251 @@ Parser Tests
   ✔ should parse assignment
   ✔ should parse function declaration
 ```
-It's a pretty simple workflow, if you like you could even do TDD and make the tests first.
+It's a pretty simple workflow, if you like you could even make the tests first so you already have expectations setted for your grammar.
 
 ## Collection Primitive
 
+We are missing a key primitive though. 
+
+```
+int[] numberList := [1, 2, 3 + 4];
+```
+
+This is not hard to implement. We need to define a primary rule `list` and use `ListPrimitive` node from `yukigo-core`. Let's add it
+
+First, let's think about the test. We expect the example above to parse as a `Variable` with expression `ListPrimitive` and type `ListType` which has int for it's elements. We might think of something like this:
+
+```ts
+it("should parse list primitive", () => {
+  const code = `int[] numberList := [1, 2, 3 + 4];`;
+  assert.deepEqual(parser.parse(code), [
+    new Variable(
+      new SymbolPrimitive("numberList"),
+      new ListPrimitive([
+        new NumberPrimitive(1),
+        new NumberPrimitive(2),
+        new ArithmeticBinaryOperation(
+          "Plus",
+          new NumberPrimitive(3),
+          new NumberPrimitive(4)
+        ),
+      ]),
+      new ListType(new SimpleType("int", []), [])
+    ),
+  ]);
+});
+```
+Let's modify our type rule to support this new list type
+```
+type -> 
+    variable {% (d) => new SimpleType(d[0].value, []) %}
+    | type "[" "]" {% (d) => new ListType(d[0], []) %}
+```
+Good! Now for the expression we have something like
+```
+list_primitive -> "[" _ expression_list _ "]" {% (d) => new ListPrimitive(d[2]) %}
+
+expression_list -> expression _ ("," _ expression _):* {% (d) => ([d[0], ...d[2].map(x => x[2])]) %}
+```
+So lastly we add the `list_primitive` rule to the `primitive` rule
+```
+primitive -> 
+    %number {% (d) => new NumberPrimitive(Number(d[0].value)) %}
+    | %char {% (d) => new CharPrimitive(d[0].value) %}
+    | %string {% (d) => new StringPrimitive(d[0].value) %}
+    | %bool {% (d) => new BooleanPrimitive(d[0].value) %}
+    | variable {% (d) => d[0] %}
+    | list_primitive {% d => d[0] %}
+```
+
+Let's run the tests and check if we got it right
+```
+Parser Tests
+  ✔ should parse assignment
+  ✔ should parse function declaration
+  ✔ should parse list primitive
+```
+
+
 ## Control Flow: If & While statements
+
+Finally, we want our language to have if statements and while loops. So we will need to implement some rules that produce `If` and `While` nodes
+
+We expect something like this for if statements
+```ts
+  it("should parse if statement", () => {
+    const code = `if(a != b) { c := a + b; } else { c := a * 2; };`;
+    assert.deepEqual(parser.parse(code), [
+      new If(
+        new ComparisonOperation(
+          "NotEqual",
+          new SymbolPrimitive("a"),
+          new SymbolPrimitive("b")
+        ),
+        new Sequence([
+          new Assignment(
+            new SymbolPrimitive("c"),
+            new ArithmeticBinaryOperation(
+              "Plus",
+              new SymbolPrimitive("a"),
+              new SymbolPrimitive("b")
+            )
+          ),
+        ]),
+        new Sequence([
+          new Assignment(
+            new SymbolPrimitive("c"),
+            new ArithmeticBinaryOperation(
+              "Multiply",
+              new SymbolPrimitive("a"),
+              new NumberPrimitive(2)
+            )
+          ),
+        ]),
+      ),
+    ]);
+  });
+});
+```
+
+First, let's add the `!=`, `==`, `*`, `if`, and `else` tokens to our lexer.
+```ts
+// ...
+const keywords = [
+  "return",
+  "if",
+  "else"
+]
+
+export const MiniLexerConfig = {
+  // other tokens
+  semicolon: ";",
+  assign: ":=",
+  notEqual: "!=",
+  equal: "==",
+  // other tokens
+  operator: /\+|\*/,
+  variable: {
+    match: /[a-z_][a-zA-Z0-9_']*/,
+    type: moo.keywords({
+      keyword: keywords,
+    }),
+  },
+  NL: { match: /\r?\n/, lineBreaks: true },
+};
+// ...
+```
+
+Now, let's define the production for the if statement
+
+```
+if_statement -> "if" _ condition _ statement_list _ "else" _ statement_list {% d => new If(d[2], d[4], d[8]) %}
+
+condition -> "(" _ expression _ ")" {% (d) => d[2] %}
+
+statement_list -> "{" _ statement:* _ "}" {% d => new Sequence(d[2]) %}
+```
+
+Good, now we are missing the rule that produces `ComparisonOperation` nodes. Let's modify the operations section to add comparison **before** arithmetic operations
+
+```
+expression -> comparison {% (d) => d[0] %}
+
+comparison ->
+    addition _ comparison_operator _ addition {% (d) => new ComparisonOperation(d[2], d[0], d[4]) %}
+    | addition {% (d) => d[0] %}
+
+addition -> 
+    addition _ "+" _ multiplication {% (d) => new ArithmeticBinaryOperation("Plus", d[0], d[4]) %}
+    | addition _ "-" _ multiplication {% (d) => new ArithmeticBinaryOperation("Minus", d[0], d[4]) %}
+    | multiplication {% (d) => d[0] %}
+
+multiplication -> 
+    multiplication _ "*" _ primary {% (d) => new ArithmeticBinaryOperation("Multiply", d[0], d[4]) %}
+    | multiplication _ "/" _ primary {% (d) => new ArithmeticBinaryOperation("Divide", d[0], d[4]) %}
+    | primary {% (d) => d[0] %}
+
+# the rest of the grammar
+
+comparison_operator -> 
+    %equal {% d => "Equal" %}
+    | %notEqual {% d => "NotEqual" %}
+
+```
+
+The `comparison_operator` rule helps us assign semantic value to the operation by the operator we received from the lexer.
+
+Also we are missing assignment statements so we can add in our statement rule
+
+```
+assignment -> variable _ ":=" _ expression {% (d) => new Assignment(d[0], d[4]) %}
+```
+
+And that should work, let's now implement `while` loops which have a `condition` and a `body` to parse something like this
+
+```ts
+it("should parse while loop statement", () => {
+  const code = `while(a < 10) { a := a + 1; };`;
+  assert.deepEqual(parser.parse(code), [
+    new While(
+      new ComparisonOperation(
+        "LessThan",
+        new SymbolPrimitive("a"),
+        new NumberPrimitive(10)
+      ),
+      new Sequence([
+        new Assignment(
+          new SymbolPrimitive("a"),
+          new ArithmeticBinaryOperation(
+            "Plus",
+            new SymbolPrimitive("a"),
+            new NumberPrimitive(1)
+          )
+        ),
+      ]),
+    ),
+  ]);
+});
+```
+
+In the lexer we need to add
+```ts
+export const MiniLexerConfig = {
+  // other tokens
+  gte: ">=",
+  gt: ">",
+  lte: "<=",
+  lt: "<",
+  // other tokens
+};
+```
+
+> Notice the order in which we defined these tokens. If the `gt` token were to be before the `gte` token, then the lexer would return the token `gt` even if it read `>=`. This is called [maximal munch](https://en.wikipedia.org/wiki/Maximal_munch) or longest match principle.
+
+Let's update our `comparison_operator` rule with these new operators
+
+```
+comparison_operator -> 
+    %equal {% d => "Equal" %}
+    | %notEqual {% d => "NotEqual" %}
+    | %lt {% d => "LessThan" %}
+    | %lte {% d => "LessOrEqualThan" %}
+    | %gt {% d => "GreaterThan" %}
+    | %gte {% d => "GreaterOrEqualThan" %}
+```
+
+And now define the `while_statement` rule reusing the condition and body from the `if_statement` rule
+
+```
+while_statement -> "while" _ condition _ statement_list {% d => new While(d[2], d[4]) %}
+```
+
+Finally we should have all tests working 
+```
+Parser Tests
+  ✔ should parse assignment
+  ✔ should parse function declaration
+  ✔ should parse list primitive
+  ✔ should parse if statement
+  ✔ should parse while loop statement
+```

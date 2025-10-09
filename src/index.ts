@@ -11,12 +11,14 @@ export class YukigoMiniParser implements YukigoParser {
       parser.feed(code);
       parser.finish();
     } catch (error) {
-      console.log(error)
       const token = error.token;
       const message = `Unexpected '${token.type}' token '${token.value}' at line ${token.line} col ${token.col}.`;
-      this.errors.push(message);
-      throw Error(message);
+      this.errors.push(message)
     }
-    return parser.results[0]
+    const results = parser.results
+    if(results.length > 1)
+      throw Error(`Ambiguous grammar. The parser generated ${results} ASTs`)
+
+    return results[0]
   }
 }
